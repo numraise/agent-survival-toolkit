@@ -18,6 +18,21 @@ enum AgentSurvivalAxis {
     Up = 2
 }
 
+enum AgentSurvivalDirection {
+    //% block="forward"
+    Forward = 0,
+    //% block="back"
+    Back = 1,
+    //% block="left"
+    Left = 2,
+    //% block="right"
+    Right = 3,
+    //% block="up"
+    Up = 4,
+    //% block="down"
+    Down = 5
+}
+
 enum AgentSurvivalScanTarget {
     //% block="any block"
     AnyBlock = 0,
@@ -64,6 +79,33 @@ namespace agentSurvival {
 
     function remember(error: AgentSurvivalError) {
         lastError = error
+    }
+
+    function errorText(error: AgentSurvivalError): string {
+        if (error == AgentSurvivalError.Blocked) {
+            return "blocked"
+        }
+        if (error == AgentSurvivalError.NoItem) {
+            return "no item"
+        }
+        if (error == AgentSurvivalError.InvalidInput) {
+            return "invalid input"
+        }
+        return "none"
+    }
+
+    function scanTargetText(target: AgentSurvivalScanTarget): string {
+        if (target == AgentSurvivalScanTarget.Water) {
+            return "water"
+        }
+        if (target == AgentSurvivalScanTarget.Lava) {
+            return "lava"
+        }
+        return "any block"
+    }
+
+    function speakStatus(message: string) {
+        player.say("Agent: " + message)
     }
 
     function blockAt(direction: number): number {
@@ -151,6 +193,25 @@ namespace agentSurvival {
         return negative ? BACK : FORWARD
     }
 
+    function directDirection(direction: AgentSurvivalDirection): number {
+        if (direction == AgentSurvivalDirection.Back) {
+            return BACK
+        }
+        if (direction == AgentSurvivalDirection.Left) {
+            return LEFT
+        }
+        if (direction == AgentSurvivalDirection.Right) {
+            return RIGHT
+        }
+        if (direction == AgentSurvivalDirection.Up) {
+            return UP
+        }
+        if (direction == AgentSurvivalDirection.Down) {
+            return DOWN
+        }
+        return FORWARD
+    }
+
     function placeIfEmpty(direction: number, slot: number): boolean {
         if (agent.detect(AgentDetection.Block, direction)) {
             return false
@@ -191,6 +252,26 @@ namespace agentSurvival {
             agent.attack(direction)
             lastCount++
         }
+    }
+
+    function spendEmeraldCharge(slot: number): boolean {
+        if (!hasEnough(slot, 1)) {
+            remember(AgentSurvivalError.NoItem)
+            return false
+        }
+        agent.drop(BACK, slot, 1)
+        return true
+    }
+
+    function powerAttackDirection(direction: number, hits: number, emeraldSlot: number): boolean {
+        for (let i = 0; i < hits; i++) {
+            if (lastCount % 5 == 0 && !spendEmeraldCharge(emeraldSlot)) {
+                return false
+            }
+            agent.attack(direction)
+            lastCount++
+        }
+        return true
     }
 
     function clearTunnelFace(width: number, height: number): number {
@@ -273,6 +354,49 @@ namespace agentSurvival {
     //% group="Status"
     export function reportLastCount(): number {
         return lastCount
+    }
+
+    /**
+     * Send a chat message from the Agent to the player.
+     */
+    //% blockId=agent_survival_say block="agent say %message"
+    //% message.defl="ready"
+    //% group="Communication"
+    export function say(message: string) {
+        speakStatus(message)
+    }
+
+    /**
+     * Report the most recent Agent Survival result in chat.
+     */
+    //% blockId=agent_survival_say_last_result block="agent report last result"
+    //% group="Communication"
+    export function sayLastResult() {
+        speakStatus("last count " + lastCount + ", error " + errorText(lastError))
+    }
+
+    /**
+     * Report the most recent scan result in chat.
+     */
+    //% blockId=agent_survival_say_scan_result block="agent report scan result for %target"
+    //% group="Communication"
+    export function sayScanResult(target: AgentSurvivalScanTarget) {
+        if (lastCount > 0) {
+            speakStatus("found " + lastCount + " " + scanTargetText(target))
+        } else {
+            speakStatus("found no " + scanTargetText(target))
+        }
+    }
+
+    /**
+     * Report how many items the Agent has in one inventory slot.
+     */
+    //% blockId=agent_survival_say_inventory_slot block="agent report inventory slot %slot"
+    //% slot.min=1 slot.max=27
+    //% group="Communication"
+    export function sayInventorySlot(slot: number) {
+        slot = clamp(slot, 1, 27)
+        speakStatus("slot " + slot + " has " + agent.getItemCount(slot) + " items")
     }
 
     /**
@@ -375,14 +499,25 @@ namespace agentSurvival {
     }
 
     /**
-     * Attack one direction multiple times.
+     * Attack one direct direction multiple times.
+     */
+    //% blockId=agent_survival_strike_direction block="agent strike %direction hits %hits"
+    //% hits.min=1 hits.max=32
+    //% group="Combat"
+    export function strikeDirection(direction: AgentSurvivalDirection, hits: number) {
+        resetResult()
+        attackDirection(directDirection(direction), hits)
+    }
+
+    /**
+     * Attack one axis direction multiple times.
      */
     //% blockId=agent_survival_strike_axis block="agent strike %axis negative %negative hits %hits"
     //% hits.min=1 hits.max=32
     //% group="Combat"
+    //% deprecated=true
     export function strikeAxis(axis: AgentSurvivalAxis, negative: boolean, hits: number) {
-        resetResult()
-        attackDirection(axisDirection(axis, negative), hits)
+        strikeDirection(axisDirection(axis, negative), hits)
     }
 
     /**
@@ -488,15 +623,46 @@ namespace agentSurvival {
     }
 
     /**
+     * Attack all six directions with emerald-powered bursts. One emerald is dropped from the selected slot for each five attacks.
+     */
+    //% blockId=agent_survival_emerald_power_attack block="agent emerald power attack all directions rounds %rounds hits %hits emerald slot %emeraldSlot"
+    //% rounds.min=1 rounds.max=32 hits.min=1 hits.max=8 emeraldSlot.min=1 emeraldSlot.max=27
+    //% group="Combat"
+    export function emeraldPowerAttack(rounds: number, hits: number, emeraldSlot: number) {
+        resetResult()
+        rounds = clamp(rounds, 1, 32)
+        hits = clamp(hits, 1, 8)
+        emeraldSlot = clamp(emeraldSlot, 1, 27)
+        for (let i = 0; i < rounds; i++) {
+            if (!powerAttackDirection(FORWARD, hits, emeraldSlot)) return
+            if (!powerAttackDirection(RIGHT, hits, emeraldSlot)) return
+            if (!powerAttackDirection(BACK, hits, emeraldSlot)) return
+            if (!powerAttackDirection(LEFT, hits, emeraldSlot)) return
+            if (!powerAttackDirection(UP, hits, emeraldSlot)) return
+            if (!powerAttackDirection(DOWN, hits, emeraldSlot)) return
+        }
+    }
+
+    /**
+     * Dig one block in the selected direct direction.
+     */
+    //% blockId=agent_survival_dig_direction block="agent dig %direction"
+    //% group="Mining"
+    export function digDirection(direction: AgentSurvivalDirection) {
+        resetResult()
+        if (destroyIfPresent(directDirection(direction))) {
+            lastCount = 1
+        }
+    }
+
+    /**
      * Dig one block in the selected axis and direction.
      */
     //% blockId=agent_survival_dig_axis block="agent dig %axis negative %negative"
     //% group="Mining"
+    //% deprecated=true
     export function digAxis(axis: AgentSurvivalAxis, negative: boolean) {
-        resetResult()
-        if (destroyIfPresent(axisDirection(axis, negative))) {
-            lastCount = 1
-        }
+        digDirection(axisDirection(axis, negative))
     }
 
     /**
